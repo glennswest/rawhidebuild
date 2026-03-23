@@ -334,48 +334,37 @@ KSEOF
 
 # Build ISO with embedded kickstart
 echo "=== Building ISO with xorriso ==="
-dnf install -y xorriso genisoimage syslinux 2>/dev/null || true
+dnf install -y xorriso 2>/dev/null || true
 
 EXTRACT="$WORK/isoextract"
 rm -rf "$EXTRACT"
 mkdir -p "$EXTRACT"
 
-# Extract the ISO
+# Extract the ISO and its El Torito boot images
 xorriso -osirrox on -indev "$WORK/boot.iso" -extract / "$EXTRACT"
 chmod -R u+w "$EXTRACT"
 
 # Copy kickstart into ISO root
 cp "$WORK/cloudid.ks" "$EXTRACT/ks.cfg"
 
-# Patch isolinux (BIOS boot) config — add serial console and kickstart
-if [ -f "$EXTRACT/isolinux/isolinux.cfg" ]; then
-    sed -i 's|^  append |  append inst.ks=cdrom:/ks.cfg console=tty0 console=ttyS0,115200 console=ttyS1,115200 ip=dhcp |' "$EXTRACT/isolinux/isolinux.cfg"
-    # Add serial directive at top
-    sed -i '1i serial 0 115200' "$EXTRACT/isolinux/isolinux.cfg"
-fi
-
-# Patch GRUB (BIOS+EFI) config — add serial console and kickstart
-for grubcfg in "$EXTRACT/EFI/BOOT/grub.cfg" "$EXTRACT/boot/grub2/grub.cfg"; do
-    if [ -f "$grubcfg" ]; then
-        # Add serial terminal setup before first menuentry
-        sed -i '/^set default/i serial --unit=0 --speed=115200\nterminal_input serial console\nterminal_output serial console' "$grubcfg"
-        # Append kickstart and console args to every linux/linuxefi line
-        sed -i '/^\s*linux\|^\s*linuxefi/ s|$| inst.ks=cdrom:/ks.cfg console=tty0 console=ttyS0,115200 console=ttyS1,115200 ip=dhcp|' "$grubcfg"
-    fi
+# Patch GRUB config — add serial console and kickstart
+for grubcfg in $(find "$EXTRACT" -name 'grub.cfg' 2>/dev/null); do
+    echo "Patching $grubcfg"
+    # Add serial terminal setup at the top
+    sed -i '1i serial --unit=0 --speed=115200\nterminal_input serial console\nterminal_output serial console\n' "$grubcfg"
+    # Append kickstart and console args to every linux/linuxefi line
+    sed -i '/^\s*linux\|^\s*linuxefi/ s|$| inst.ks=cdrom:/ks.cfg console=tty0 console=ttyS0,115200 console=ttyS1,115200 ip=dhcp|' "$grubcfg"
+    # Set timeout to auto-boot quickly
+    sed -i 's/^set timeout=.*/set timeout=5/' "$grubcfg"
 done
 
-# Rebuild ISO with BIOS boot (isolinux)
-ISOLINUX_BIN="isolinux/isolinux.bin"
-BOOT_CAT="isolinux/boot.cat"
-xorriso -as mkisofs \
-    -o "$WORK/$ISO_NAME" \
-    -b "$ISOLINUX_BIN" \
-    -c "$BOOT_CAT" \
-    -no-emul-boot \
-    -boot-load-size 4 \
-    -boot-info-table \
-    -J -R -V "RAWHIDE-DEV" \
-    "$EXTRACT"
+# Rebuild ISO — reuse the original boot structure via xorriso modify mode
+xorriso -indev "$WORK/boot.iso" \
+    -outdev "$WORK/$ISO_NAME" \
+    -map "$EXTRACT/ks.cfg" /ks.cfg \
+    -boot_image any replay \
+    -volid "RAWHIDE-DEV" \
+    -commit
 
 ls -lh "$WORK/$ISO_NAME"
 
