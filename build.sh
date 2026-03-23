@@ -6,12 +6,11 @@ CDROM_NAME="rawhide-dev-$(date +%Y%m%d%H%M)"
 ISO_NAME="${CDROM_NAME}.iso"
 WORK="/data/rawhidebuild"
 RAWHIDE_URL="https://dl.fedoraproject.org/pub/fedora/linux/development/rawhide/Everything/x86_64/os/images/boot.iso"
+RAWHIDE_REPO="https://dl.fedoraproject.org/pub/fedora/linux/development/rawhide/Everything/x86_64/os/"
 
 # Install build tools
-if ! command -v mkksiso &>/dev/null; then
-    echo "=== Installing lorax (mkksiso) ==="
-    dnf install -y lorax jq
-fi
+echo "=== Installing build tools ==="
+dnf install -y lorax jq xorriso createrepo_c dnf-plugins-core
 
 mkdir -p "$WORK"
 
@@ -23,10 +22,10 @@ else
     echo "=== Using cached boot.iso ==="
 fi
 
-# Write kickstart
+# Write kickstart — uses cdrom as install source (packages on disc)
 echo "=== Writing kickstart ==="
 cat > "$WORK/cloudid.ks" << 'KSEOF'
-url --url=https://dl.fedoraproject.org/pub/fedora/linux/development/rawhide/Everything/x86_64/os/
+cdrom
 lang en_US.UTF-8
 keyboard us
 timezone UTC --utc
@@ -342,57 +341,99 @@ git config --system core.autocrlf input
 %end
 KSEOF
 
-# Build ISO with embedded kickstart
-echo "=== Building ISO with xorriso ==="
-dnf install -y xorriso 2>/dev/null || true
+# === Download all packages for offline install ===
+echo "=== Downloading all RPMs for offline DVD ==="
+PKGDIR="$WORK/Packages"
+rm -rf "$PKGDIR"
+mkdir -p "$PKGDIR"
 
+# Extract package list from kickstart (between %packages and %end)
+PKGLIST=$(sed -n '/%packages/,/%end/{/%packages/d;/%end/d;/^#/d;/^$/d;p}' "$WORK/cloudid.ks")
+echo "Package list:"
+echo "$PKGLIST"
+
+# Download all packages + dependencies from Rawhide repo
+dnf download --resolve --alldeps \
+    --destdir="$PKGDIR" \
+    --repofrompath=rawhide,"$RAWHIDE_REPO" \
+    --repo=rawhide \
+    --releasever=rawhide \
+    --forcearch=x86_64 \
+    $PKGLIST
+
+echo "=== Downloaded $(ls "$PKGDIR"/*.rpm 2>/dev/null | wc -l) RPMs ==="
+du -sh "$PKGDIR"
+
+# Create repo metadata
+echo "=== Creating repository metadata ==="
+createrepo_c "$PKGDIR"
+
+# === Build the DVD ISO ===
+echo "=== Building DVD ISO ==="
 EXTRACT="$WORK/isoextract"
 rm -rf "$EXTRACT"
 mkdir -p "$EXTRACT"
 
-# Extract the ISO
+# Extract boot.iso
 xorriso -osirrox on -indev "$WORK/boot.iso" -extract / "$EXTRACT"
 chmod -R u+w "$EXTRACT"
 
-# Copy kickstart into ISO root
+# Copy kickstart and packages into ISO tree
 cp "$WORK/cloudid.ks" "$EXTRACT/ks.cfg"
+cp -a "$PKGDIR" "$EXTRACT/Packages"
+cp -a "$PKGDIR/repodata" "$EXTRACT/repodata"
 
-# Get the original volume ID (needed for inst.stage2=hd:LABEL=...)
+# Get original volume ID
 ORIG_VOLID=$(xorriso -indev "$WORK/boot.iso" -pvd_info 2>&1 | grep "Volume Id" | sed 's/.*: //' | tr -d "'" | xargs)
 echo "Original Volume ID: $ORIG_VOLID"
 
-# Patch every grub.cfg found in the extracted tree
+# Patch every grub.cfg
 for grubcfg in $(find "$EXTRACT" -name 'grub.cfg' 2>/dev/null); do
     echo "Patching $grubcfg"
-    # Add serial terminal at top
+    # Serial terminal
     sed -i '1i serial --unit=1 --speed=115200\nterminal_input serial console\nterminal_output serial console' "$grubcfg"
-    # Timeout 0, default to first entry (Install, not Test media)
+    # Auto-install: timeout 0, first entry
     sed -i 's/^set timeout=.*/set timeout=0/' "$grubcfg"
     sed -i 's/^set default=.*/set default="0"/' "$grubcfg"
-    # Add kickstart + console to all kernel lines
-    sed -i '/^\s*linux\|^\s*linuxefi/ s|$| inst.ks=cdrom:/ks.cfg earlycon=uart8250,io,0x2f8,115200n8 console=tty0 console=ttyS1,115200n8 console=ttyS0,115200n8 ip=dhcp|' "$grubcfg"
-    # Remove mediacheck (rd.live.check) so it goes straight to install
+    # Add kickstart + console to kernel lines
+    sed -i '/^\s*linux\|^\s*linuxefi/ s|$| inst.ks=cdrom:/ks.cfg earlycon=uart8250,io,0x2f8,115200n8 console=tty0 console=ttyS1,115200n8 console=ttyS0,115200n8|' "$grubcfg"
+    # Remove media check
     sed -i 's/ rd.live.check//g' "$grubcfg"
     echo "--- Patched grub.cfg ---"
     cat "$grubcfg"
     echo "--- end ---"
 done
 
-# Rebuild ISO — map ALL modified files back, preserve boot structure and original volume ID
-# Build map args for all patched grub.cfg files
-MAP_ARGS="-map $EXTRACT/ks.cfg /ks.cfg"
-for grubcfg in $(find "$EXTRACT" -name 'grub.cfg' 2>/dev/null); do
-    REL_PATH="${grubcfg#$EXTRACT}"
-    MAP_ARGS="$MAP_ARGS -map $grubcfg $REL_PATH"
-    echo "Will map: $REL_PATH"
-done
+# Build new ISO from the full extracted tree (with packages)
+echo "=== Building final ISO with xorriso ==="
+# Find the EFI boot image for El Torito
+EFI_IMG=$(find "$EXTRACT" -name 'efiboot.img' -print -quit 2>/dev/null)
+echo "EFI image: $EFI_IMG"
 
-xorriso -indev "$WORK/boot.iso" \
-    -outdev "$WORK/$ISO_NAME" \
-    $MAP_ARGS \
-    -boot_image any replay \
-    -volid "$ORIG_VOLID" \
-    -commit
+xorriso -as mkisofs \
+    -o "$WORK/$ISO_NAME" \
+    -R -J -V "$ORIG_VOLID" \
+    -b isolinux/isolinux.bin \
+    -c isolinux/boot.cat \
+    -no-emul-boot \
+    -boot-load-size 4 \
+    -boot-info-table \
+    -eltorito-alt-boot \
+    -e images/efiboot.img \
+    -no-emul-boot \
+    -isohybrid-gpt-basdat \
+    "$EXTRACT" 2>&1 || {
+    # Fallback: no isolinux (EFI-only like Rawhide boot.iso)
+    echo "=== No isolinux, building EFI-only ISO ==="
+    xorriso -as mkisofs \
+        -o "$WORK/$ISO_NAME" \
+        -R -J -V "$ORIG_VOLID" \
+        -eltorito-alt-boot \
+        -e images/efiboot.img \
+        -no-emul-boot \
+        -isohybrid-gpt-basdat \
+        "$EXTRACT"
+}
 
 ls -lh "$WORK/$ISO_NAME"
 
@@ -403,7 +444,7 @@ sleep 2
 
 curl -sf -X POST "$MKUBE_API/api/v1/iscsi-cdroms" \
     -H 'Content-Type: application/json' \
-    -d "{\"metadata\":{\"name\":\"$CDROM_NAME\"},\"spec\":{\"isoFile\":\"$ISO_NAME\",\"description\":\"Fedora Rawhide dev + CloudID SSH\",\"readOnly\":true}}"
+    -d "{\"metadata\":{\"name\":\"$CDROM_NAME\"},\"spec\":{\"isoFile\":\"$ISO_NAME\",\"description\":\"Fedora Rawhide DVD + CloudID SSH\",\"readOnly\":true}}"
 echo ""
 
 echo "=== Uploading ISO to mkube ==="
