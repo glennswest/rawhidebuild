@@ -340,30 +340,40 @@ EXTRACT="$WORK/isoextract"
 rm -rf "$EXTRACT"
 mkdir -p "$EXTRACT"
 
-# Extract the ISO and its El Torito boot images
+# Extract the ISO
 xorriso -osirrox on -indev "$WORK/boot.iso" -extract / "$EXTRACT"
 chmod -R u+w "$EXTRACT"
 
 # Copy kickstart into ISO root
 cp "$WORK/cloudid.ks" "$EXTRACT/ks.cfg"
 
-# Patch GRUB config — add serial console and kickstart
+# Get the original volume ID (needed for inst.stage2=hd:LABEL=...)
+ORIG_VOLID=$(xorriso -indev "$WORK/boot.iso" -pvd_info 2>&1 | grep "Volume Id" | sed 's/.*: //' | tr -d "'" | xargs)
+echo "Original Volume ID: $ORIG_VOLID"
+
+# Patch every grub.cfg found in the extracted tree
 for grubcfg in $(find "$EXTRACT" -name 'grub.cfg' 2>/dev/null); do
     echo "Patching $grubcfg"
-    # Add serial terminal setup at the top
-    sed -i '1i serial --unit=0 --speed=115200\nterminal_input serial console\nterminal_output serial console\n' "$grubcfg"
-    # Append kickstart and console args to every linux/linuxefi line
+    # Add serial terminal at top
+    sed -i '1i serial --unit=0 --speed=115200\nterminal_input serial console\nterminal_output serial console' "$grubcfg"
+    # Timeout 0 — boot immediately
+    sed -i 's/^set timeout=.*/set timeout=0/' "$grubcfg"
+    # Add kickstart + console to all kernel lines
     sed -i '/^\s*linux\|^\s*linuxefi/ s|$| inst.ks=cdrom:/ks.cfg console=tty0 console=ttyS0,115200 console=ttyS1,115200 ip=dhcp|' "$grubcfg"
-    # Set timeout to auto-boot quickly
-    sed -i 's/^set timeout=.*/set timeout=5/' "$grubcfg"
+    # Remove mediacheck (rd.live.check) so it goes straight to install
+    sed -i 's/ rd.live.check//g' "$grubcfg"
+    echo "--- Patched grub.cfg ---"
+    cat "$grubcfg"
+    echo "--- end ---"
 done
 
-# Rebuild ISO — reuse the original boot structure via xorriso modify mode
+# Rebuild ISO — map ALL modified files back, preserve boot structure and original volume ID
 xorriso -indev "$WORK/boot.iso" \
     -outdev "$WORK/$ISO_NAME" \
     -map "$EXTRACT/ks.cfg" /ks.cfg \
+    -map "$EXTRACT/EFI/BOOT/grub.cfg" /EFI/BOOT/grub.cfg \
     -boot_image any replay \
-    -volid "RAWHIDE-DEV" \
+    -volid "$ORIG_VOLID" \
     -commit
 
 ls -lh "$WORK/$ISO_NAME"
