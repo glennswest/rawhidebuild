@@ -348,9 +348,35 @@ rm -rf "$PKGDIR"
 mkdir -p "$PKGDIR"
 
 # Extract package list from kickstart (between %packages and %end)
-PKGLIST=$(sed -n '/%packages/,/%end/{/%packages/d;/%end/d;/^#/d;/^$/d;p}' "$WORK/cloudid.ks")
-echo "Package list:"
-echo "$PKGLIST"
+# Separate @groups from individual packages
+GROUPS=""
+PACKAGES=""
+while IFS= read -r line; do
+    [[ -z "$line" ]] && continue
+    if [[ "$line" == @* ]]; then
+        GROUPS="$GROUPS $line"
+    else
+        PACKAGES="$PACKAGES $line"
+    fi
+done < <(sed -n '/%packages/,/%end/{/%packages/d;/%end/d;/^#/d;/^$/d;p}' "$WORK/cloudid.ks")
+
+echo "Groups: $GROUPS"
+echo "Packages: $PACKAGES"
+
+# Resolve @groups to package names via dnf group info
+RAWHIDE_REPO_OPTS="--repofrompath=rawhide,$RAWHIDE_REPO --repo=rawhide --releasever=rawhide"
+GROUP_PKGS=""
+for grp in $GROUPS; do
+    grpname="${grp#@}"
+    echo "=== Resolving group: $grpname ==="
+    resolved=$(dnf $RAWHIDE_REPO_OPTS group info "$grpname" 2>/dev/null \
+        | grep -E '^ ' | sed 's/^ *//' | cut -d' ' -f1 || true)
+    GROUP_PKGS="$GROUP_PKGS $resolved"
+done
+
+ALL_PKGS="$GROUP_PKGS $PACKAGES"
+echo "=== Total packages to download ==="
+echo "$ALL_PKGS" | tr ' ' '\n' | grep -v '^$' | wc -l
 
 # Download all packages + dependencies from Rawhide repo
 dnf download --resolve --alldeps \
@@ -359,7 +385,8 @@ dnf download --resolve --alldeps \
     --repo=rawhide \
     --releasever=rawhide \
     --forcearch=x86_64 \
-    $PKGLIST
+    --skip-unavailable \
+    $ALL_PKGS
 
 echo "=== Downloaded $(ls "$PKGDIR"/*.rpm 2>/dev/null | wc -l) RPMs ==="
 du -sh "$PKGDIR"
