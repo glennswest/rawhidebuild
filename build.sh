@@ -10,7 +10,7 @@ RAWHIDE_URL="https://dl.fedoraproject.org/pub/fedora/linux/development/rawhide/E
 # Install build tools
 if ! command -v mkksiso &>/dev/null; then
     echo "=== Installing lorax (mkksiso) ==="
-    dnf install -y lorax
+    dnf install -y lorax jq
 fi
 
 mkdir -p "$WORK"
