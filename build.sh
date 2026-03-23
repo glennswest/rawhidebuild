@@ -398,4 +398,6 @@ curl -sf "$MKUBE_API/api/v1/iscsi-cdroms/$CDROM_NAME" | jq .status
 
 echo ""
 echo "=== Done! CDROM ready: ${CDROM_NAME} ==="
-echo "Boot server2: mk patch bmh/server2 --type=merge -p '{\"spec\":{\"image\":\"${CDROM_NAME}\"}}'"
+echo "To boot a server from this ISO:"
+echo "  mk patch bmh/<hostname> --type=merge -p '{\"spec\":{\"image\":\"${CDROM_NAME}\"}}'"
+echo "  mk annotate bmh/<hostname> bmh.mkube.io/reboot=\$(date -u +%Y-%m-%dT%H:%M:%SZ) --overwrite"
