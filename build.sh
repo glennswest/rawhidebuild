@@ -369,10 +369,17 @@ for grubcfg in $(find "$EXTRACT" -name 'grub.cfg' 2>/dev/null); do
 done
 
 # Rebuild ISO — map ALL modified files back, preserve boot structure and original volume ID
+# Build map args for all patched grub.cfg files
+MAP_ARGS="-map $EXTRACT/ks.cfg /ks.cfg"
+for grubcfg in $(find "$EXTRACT" -name 'grub.cfg' 2>/dev/null); do
+    REL_PATH="${grubcfg#$EXTRACT}"
+    MAP_ARGS="$MAP_ARGS -map $grubcfg $REL_PATH"
+    echo "Will map: $REL_PATH"
+done
+
 xorriso -indev "$WORK/boot.iso" \
     -outdev "$WORK/$ISO_NAME" \
-    -map "$EXTRACT/ks.cfg" /ks.cfg \
-    -map "$EXTRACT/EFI/BOOT/grub.cfg" /EFI/BOOT/grub.cfg \
+    $MAP_ARGS \
     -boot_image any replay \
     -volid "$ORIG_VOLID" \
     -commit
