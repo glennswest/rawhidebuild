@@ -431,36 +431,25 @@ for grubcfg in $(find "$EXTRACT" -name 'grub.cfg' 2>/dev/null); do
     echo "--- end ---"
 done
 
-# Build new ISO from the full extracted tree (with packages)
-echo "=== Building final ISO with xorriso ==="
-# Find the EFI boot image for El Torito
-EFI_IMG=$(find "$EXTRACT" -name 'efiboot.img' -print -quit 2>/dev/null)
-echo "EFI image: $EFI_IMG"
+# Build ISO using xorriso modify mode — preserves original boot structure
+echo "=== Building final ISO with xorriso (modify mode) ==="
 
-xorriso -as mkisofs \
-    -o "$WORK/$ISO_NAME" \
-    -R -J -V "$ORIG_VOLID" \
-    -b isolinux/isolinux.bin \
-    -c isolinux/boot.cat \
-    -no-emul-boot \
-    -boot-load-size 4 \
-    -boot-info-table \
-    -eltorito-alt-boot \
-    -e images/efiboot.img \
-    -no-emul-boot \
-    -isohybrid-gpt-basdat \
-    "$EXTRACT" 2>&1 || {
-    # Fallback: no isolinux (EFI-only like Rawhide boot.iso)
-    echo "=== No isolinux, building EFI-only ISO ==="
-    xorriso -as mkisofs \
-        -o "$WORK/$ISO_NAME" \
-        -R -J -V "$ORIG_VOLID" \
-        -eltorito-alt-boot \
-        -e images/efiboot.img \
-        -no-emul-boot \
-        -isohybrid-gpt-basdat \
-        "$EXTRACT"
-}
+# Build map args: kickstart, packages, repodata, and patched grub.cfgs
+MAP_ARGS="-map $EXTRACT/ks.cfg /ks.cfg"
+MAP_ARGS="$MAP_ARGS -map $EXTRACT/Packages /Packages"
+MAP_ARGS="$MAP_ARGS -map $EXTRACT/repodata /repodata"
+for grubcfg in $(find "$EXTRACT" -name 'grub.cfg' 2>/dev/null); do
+    REL_PATH="${grubcfg#$EXTRACT}"
+    MAP_ARGS="$MAP_ARGS -map $grubcfg $REL_PATH"
+    echo "Will map: $REL_PATH"
+done
+
+xorriso -indev "$WORK/boot.iso" \
+    -outdev "$WORK/$ISO_NAME" \
+    $MAP_ARGS \
+    -boot_image any replay \
+    -volid "$ORIG_VOLID" \
+    -commit
 
 ls -lh "$WORK/$ISO_NAME"
 
