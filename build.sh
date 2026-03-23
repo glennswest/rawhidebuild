@@ -333,12 +333,49 @@ git config --system core.autocrlf input
 KSEOF
 
 # Build ISO with embedded kickstart
-echo "=== Building ISO with mkksiso ==="
-mkksiso --skip-mkefiboot \
-    --cmdline "inst.ks=file:///run/install/ks.cfg console=tty0 console=ttyS0,115200 console=ttyS1,115200 ip=dhcp" \
-    "$WORK/cloudid.ks" \
-    "$WORK/boot.iso" \
-    "$WORK/$ISO_NAME"
+echo "=== Building ISO with xorriso ==="
+dnf install -y xorriso genisoimage syslinux 2>/dev/null || true
+
+EXTRACT="$WORK/isoextract"
+rm -rf "$EXTRACT"
+mkdir -p "$EXTRACT"
+
+# Extract the ISO
+xorriso -osirrox on -indev "$WORK/boot.iso" -extract / "$EXTRACT"
+chmod -R u+w "$EXTRACT"
+
+# Copy kickstart into ISO root
+cp "$WORK/cloudid.ks" "$EXTRACT/ks.cfg"
+
+# Patch isolinux (BIOS boot) config — add serial console and kickstart
+if [ -f "$EXTRACT/isolinux/isolinux.cfg" ]; then
+    sed -i 's|^  append |  append inst.ks=cdrom:/ks.cfg console=tty0 console=ttyS0,115200 console=ttyS1,115200 ip=dhcp |' "$EXTRACT/isolinux/isolinux.cfg"
+    # Add serial directive at top
+    sed -i '1i serial 0 115200' "$EXTRACT/isolinux/isolinux.cfg"
+fi
+
+# Patch GRUB (BIOS+EFI) config — add serial console and kickstart
+for grubcfg in "$EXTRACT/EFI/BOOT/grub.cfg" "$EXTRACT/boot/grub2/grub.cfg"; do
+    if [ -f "$grubcfg" ]; then
+        # Add serial terminal setup before first menuentry
+        sed -i '/^set default/i serial --unit=0 --speed=115200\nterminal_input serial console\nterminal_output serial console' "$grubcfg"
+        # Append kickstart and console args to every linux/linuxefi line
+        sed -i '/^\s*linux\|^\s*linuxefi/ s|$| inst.ks=cdrom:/ks.cfg console=tty0 console=ttyS0,115200 console=ttyS1,115200 ip=dhcp|' "$grubcfg"
+    fi
+done
+
+# Rebuild ISO with BIOS boot (isolinux)
+ISOLINUX_BIN="isolinux/isolinux.bin"
+BOOT_CAT="isolinux/boot.cat"
+xorriso -as mkisofs \
+    -o "$WORK/$ISO_NAME" \
+    -b "$ISOLINUX_BIN" \
+    -c "$BOOT_CAT" \
+    -no-emul-boot \
+    -boot-load-size 4 \
+    -boot-info-table \
+    -J -R -V "RAWHIDE-DEV" \
+    "$EXTRACT"
 
 ls -lh "$WORK/$ISO_NAME"
 
