@@ -38,7 +38,7 @@ sshkey --username=root "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQDWUsb0I159v27vSBuO
 zerombr
 clearpart --all --initlabel --drives=sda
 autopart --type=plain
-bootloader --location=mbr --boot-drive=sda
+bootloader --location=mbr --boot-drive=sda --append="earlycon=uart8250,io,0x2f8,115200n8 console=tty0 console=ttyS1,115200n8 console=ttyS0,115200n8"
 services --enabled=sshd,chronyd
 reboot
 
@@ -296,6 +296,15 @@ WantedBy=timers.target
 TMREOF
 
 systemctl enable cloudid-keys.timer sshd
+systemctl enable serial-getty@ttyS0.service
+systemctl enable serial-getty@ttyS1.service
+
+# Configure GRUB for serial on the installed system
+cat > /etc/default/grub.d/serial-console.cfg << 'GRUBEOF'
+GRUB_TERMINAL="serial console"
+GRUB_SERIAL_COMMAND="serial --unit=1 --speed=115200"
+GRUBEOF
+grub2-mkconfig -o /boot/grub2/grub.cfg 2>/dev/null || true
 
 # Install rustup with full toolchain
 export RUSTUP_HOME=/usr/local/rustup
@@ -356,12 +365,12 @@ echo "Original Volume ID: $ORIG_VOLID"
 for grubcfg in $(find "$EXTRACT" -name 'grub.cfg' 2>/dev/null); do
     echo "Patching $grubcfg"
     # Add serial terminal at top
-    sed -i '1i serial --unit=0 --speed=115200\nterminal_input serial console\nterminal_output serial console' "$grubcfg"
+    sed -i '1i serial --unit=1 --speed=115200\nterminal_input serial console\nterminal_output serial console' "$grubcfg"
     # Timeout 0, default to first entry (Install, not Test media)
     sed -i 's/^set timeout=.*/set timeout=0/' "$grubcfg"
     sed -i 's/^set default=.*/set default="0"/' "$grubcfg"
     # Add kickstart + console to all kernel lines
-    sed -i '/^\s*linux\|^\s*linuxefi/ s|$| inst.ks=cdrom:/ks.cfg console=tty0 console=ttyS0,115200 console=ttyS1,115200 ip=dhcp|' "$grubcfg"
+    sed -i '/^\s*linux\|^\s*linuxefi/ s|$| inst.ks=cdrom:/ks.cfg earlycon=uart8250,io,0x2f8,115200n8 console=tty0 console=ttyS1,115200n8 console=ttyS0,115200n8 ip=dhcp|' "$grubcfg"
     # Remove mediacheck (rd.live.check) so it goes straight to install
     sed -i 's/ rd.live.check//g' "$grubcfg"
     echo "--- Patched grub.cfg ---"
