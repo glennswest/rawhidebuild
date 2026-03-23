@@ -45,26 +45,138 @@ reboot
 @core
 @standard
 @development-tools
+@c-development
+
+# SSH & system
 openssh-server
 openssh-clients
 chrony
 vim-enhanced
+neovim
 tmux
 git
+git-lfs
+git-email
+gh
+tig
 rsync
 htop
 curl
 wget
 jq
-strace
+yq
+tree
+zsh
+ripgrep
+fd-find
+bat
+fzf
+ShellCheck
+diffutils
+patch
+
+# Kernel development — core
+kernel-devel
+kernel-headers
+kernel-modules
+kernel-modules-extra
+glibc-devel
+glibc-static
+elfutils-libelf-devel
+elfutils-devel
+openssl-devel
+dwarves
+sparse
+coccinelle
+bc
+bison
+flex
+ncurses-devel
+perl
+perl-devel
+python3
+python3-pip
+python3-devel
+cscope
+ctags
+kmod
+kmod-devel
+
+# Device driver subsystem headers
+pciutils
+pciutils-devel
+usbutils
+libusb1-devel
+libpcap-devel
+libdrm-devel
+mesa-libGL-devel
+mesa-libEGL-devel
+libinput-devel
+libevdev-devel
+libudev-devel
+systemd-devel
+
+# Block/storage driver headers
+lvm2-devel
+device-mapper-devel
+libblkid-devel
+libaio-devel
+liburing-devel
+sg3_utils-devel
+nvme-cli
+
+# Network driver headers
+libmnl-devel
+libnl3-devel
+libnfnetlink-devel
+libnetfilter_conntrack-devel
+ethtool
+iw
+
+# RDMA / InfiniBand
+rdma-core-devel
+libibverbs-devel
+
+# NUMA
+numactl-devel
+
+# Sound/ALSA
+alsa-lib-devel
+
+# Crypto
+libgcrypt-devel
+nss-devel
+
+# Firmware / ACPI
+acpica-tools
+i2c-tools
+
+# Kernel debugging & tracing
 perf
+strace
+ltrace
+systemtap
+systemtap-devel
+crash
+trace-cmd
+bpftool
+libbpf-devel
+bcc-devel
+bcc-tools
 bpftrace
-rust
-cargo
-rustfmt
-clippy
-golang
-golang-bin
+
+# Device tree (ARM kernel work)
+dtc
+
+# Firmware tools
+pesign
+
+# Kernel doc build
+python3-sphinx
+graphviz
+texinfo
+
+# C/C++ toolchain
 gcc
 gcc-c++
 clang
@@ -77,28 +189,69 @@ autoconf
 automake
 libtool
 pkgconf
-kernel-devel
-kernel-headers
-kernel-modules-extra
-elfutils-libelf-devel
-dwarves
-bc
-flex
-bison
-openssl-devel
-ncurses-devel
-sparse
-cscope
-ctags
-glibc-devel
-glibc-static
+ccache
+make
+
+# Rust (distro packages — rustup in %post)
+rust
+cargo
+rustfmt
+clippy
+rust-src
+rust-std-static
 musl-libc
 musl-gcc
-liburing-devel
+
+# Go toolchain
+golang
+golang-misc
+
+# Block device & filesystem tools
+parted
+gdisk
+e2fsprogs
+xfsprogs
+btrfs-progs
+dosfstools
+squashfs-tools
+mdadm
+device-mapper-multipath
+cryptsetup
 iscsi-initiator-utils
+sg3_utils
+lsscsi
+sdparm
+hdparm
+smartmontools
+nbd
+blktrace
+fio
+ioping
+
+# Networking & debugging
+bind-utils
+iputils
+iproute
+nmap-ncat
+socat
+tcpdump
+wireshark-cli
+
+# Container & packaging
+podman
+buildah
+skopeo
+rpm-build
+rpm-devel
+rpmlint
+
+# Libraries
 zlib-devel
 libffi-devel
 sqlite-devel
+bzip2-devel
+xz-devel
+readline-devel
 %end
 
 %post --log=/root/ks-post.log
@@ -143,17 +296,39 @@ TMREOF
 
 systemctl enable cloudid-keys.timer sshd
 
-# Install rustup
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
-source /root/.cargo/env
+# Install rustup with full toolchain
+export RUSTUP_HOME=/usr/local/rustup
+export CARGO_HOME=/usr/local/cargo
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable --profile default
+source /usr/local/cargo/env
+rustup component add rust-src rust-analyzer clippy rustfmt
 rustup target add x86_64-unknown-linux-musl aarch64-unknown-linux-musl
-rustup component add rust-src rust-analyzer
+# Cargo tools
+curl -L --proto '=https' --tlsv1.2 -sSf https://raw.githubusercontent.com/cargo-bins/cargo-binstall/main/install-from-binstall-release.sh | bash
+cargo binstall -y cargo-watch cargo-expand cargo-audit sccache || true
+
+# Go tools
+export GOPATH=/root/go
+mkdir -p "$GOPATH/src" "$GOPATH/bin" "$GOPATH/pkg"
+go install golang.org/x/tools/gopls@latest || true
+go install github.com/go-delve/delve/cmd/dlv@latest || true
+go install honnef.co/go/tools/cmd/staticcheck@latest || true
+
+# Python extras for kernel dev
+pip3 install --no-cache-dir b4 codespell || true
 
 # Dev paths
 cat > /etc/profile.d/dev-paths.sh << 'ENVEOF'
+export RUSTUP_HOME=/usr/local/rustup
+export CARGO_HOME=/usr/local/cargo
 export GOPATH=/root/go
-export PATH=$PATH:/root/go/bin:/root/.cargo/bin
+export PATH=$PATH:/root/go/bin:/usr/local/cargo/bin
 ENVEOF
+
+# Git defaults
+git config --system init.defaultBranch main
+git config --system pull.rebase true
+git config --system core.autocrlf input
 %end
 KSEOF
 
