@@ -1,0 +1,8 @@
+[Unit]
+Description=Refresh SSH keys from CloudID
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/bin/bash -c 'KEYS=""; for idx in $(curl -sf http://192.168.200.20:8090/latest/meta-data/public-keys/ 2>/dev/null | grep -oP "^\\d+"); do K=$(curl -sf http://192.168.200.20:8090/latest/meta-data/public-keys/$idx/openssh-key 2>/dev/null); [ -n "$K" ] && KEYS="$KEYS\n$K"; done; if [ -n "$KEYS" ]; then mkdir -p /root/.ssh; echo -e "$KEYS" | sort -u > /root/.ssh/authorized_keys; chmod 600 /root/.ssh/authorized_keys; fi'

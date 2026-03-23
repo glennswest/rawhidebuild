@@ -1,0 +1,9 @@
+[Unit]
+Description=Refresh SSH keys from CloudID every 5 minutes
+
+[Timer]
+OnBootSec=30
+OnUnitActiveSec=300
+
+[Install]
+WantedBy=timers.target
