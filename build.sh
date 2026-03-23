@@ -356,8 +356,9 @@ for grubcfg in $(find "$EXTRACT" -name 'grub.cfg' 2>/dev/null); do
     echo "Patching $grubcfg"
     # Add serial terminal at top
     sed -i '1i serial --unit=0 --speed=115200\nterminal_input serial console\nterminal_output serial console' "$grubcfg"
-    # Timeout 0 — boot immediately
+    # Timeout 0, default to first entry (Install, not Test media)
     sed -i 's/^set timeout=.*/set timeout=0/' "$grubcfg"
+    sed -i 's/^set default=.*/set default="0"/' "$grubcfg"
     # Add kickstart + console to all kernel lines
     sed -i '/^\s*linux\|^\s*linuxefi/ s|$| inst.ks=cdrom:/ks.cfg console=tty0 console=ttyS0,115200 console=ttyS1,115200 ip=dhcp|' "$grubcfg"
     # Remove mediacheck (rd.live.check) so it goes straight to install
