@@ -2,8 +2,8 @@
 set -euo pipefail
 
 MKUBE_API="http://192.168.200.2:8082"
-CDROM_NAME="rawhide-dev-$(date +%Y%m%d%H%M)"
-ISO_NAME="${CDROM_NAME}.iso"
+CDROM_NAME="rawhideinstall"
+ISO_NAME="rawhideinstall.iso"
 WORK="/data/rawhidebuild"
 RAWHIDE_URL="https://dl.fedoraproject.org/pub/fedora/linux/development/rawhide/Everything/x86_64/os/images/boot.iso"
 RAWHIDE_REPO="https://dl.fedoraproject.org/pub/fedora/linux/development/rawhide/Everything/x86_64/os/"
