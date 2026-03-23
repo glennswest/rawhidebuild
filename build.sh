@@ -334,7 +334,7 @@ KSEOF
 
 # Build ISO with embedded kickstart
 echo "=== Building ISO with mkksiso ==="
-mkksiso \
+mkksiso --skip-mkefiboot \
     --cmdline "inst.ks=file:///run/install/ks.cfg console=tty0 console=ttyS0,115200 console=ttyS1,115200 ip=dhcp" \
     "$WORK/cloudid.ks" \
     "$WORK/boot.iso" \
