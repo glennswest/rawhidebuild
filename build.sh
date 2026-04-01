@@ -345,13 +345,9 @@ git config --system init.defaultBranch main
 git config --system pull.rebase true
 git config --system core.autocrlf input
 
-# Switch BMH to localboot so the server doesn't reinstall on next reboot
-MKUBE_API="http://192.168.200.2:8082"
-MY_HOSTNAME=$(hostname -s)
-echo "Switching BMH/$MY_HOSTNAME to localboot..."
-curl -sf -X PATCH "${MKUBE_API}/api/v1/namespaces/default/baremetalhosts/${MY_HOSTNAME}" \
-    -H 'Content-Type: application/merge-patch+json' \
-    -d '{"spec":{"image":"localboot"}}' && echo "Switched to localboot" || echo "WARNING: Failed to switch to localboot"
+# Signal mkube that install is complete — switches BMH to localboot
+# so the server boots from disk on next reboot instead of reinstalling
+curl -sf -X POST "http://192.168.200.2:8082/api/v1/boot-complete" && echo "Switched to localboot" || echo "WARNING: Failed to signal boot-complete"
 %end
 KSEOF
 
