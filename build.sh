@@ -25,7 +25,13 @@ fi
 # Write kickstart — uses cdrom as install source (packages on disc)
 echo "=== Writing kickstart ==="
 cat > "$WORK/cloudid.ks" << 'KSEOF'
-cdrom
+# Install source set via kernel param: inst.repo=hd:LABEL=<volid>
+
+# Disable online repos — boot.iso is netinstall, its repos point to mirrors.
+# All packages are on the ISO; no internet required.
+repo --name=fedora --baseurl=file:///run/install/repo --cost=1
+repo --name=fedora-updates --baseurl=file:///run/install/repo --cost=1
+
 lang en_US.UTF-8
 keyboard us
 timezone UTC --utc
@@ -338,62 +344,86 @@ ENVEOF
 git config --system init.defaultBranch main
 git config --system pull.rebase true
 git config --system core.autocrlf input
+
+# Switch BMH to localboot so the server doesn't reinstall on next reboot
+MKUBE_API="http://192.168.200.2:8082"
+MY_HOSTNAME=$(hostname -s)
+echo "Switching BMH/$MY_HOSTNAME to localboot..."
+curl -sf -X PATCH "${MKUBE_API}/api/v1/namespaces/default/baremetalhosts/${MY_HOSTNAME}" \
+    -H 'Content-Type: application/merge-patch+json' \
+    -d '{"spec":{"image":"localboot"}}' && echo "Switched to localboot" || echo "WARNING: Failed to switch to localboot"
 %end
 KSEOF
 
-# === Download all packages for offline install ===
+# === Download all packages for offline DVD ===
 echo "=== Downloading all RPMs for offline DVD ==="
 PKGDIR="$WORK/Packages"
 rm -rf "$PKGDIR"
 mkdir -p "$PKGDIR"
 
-# Extract package list from kickstart (between %packages and %end)
-# Separate @groups from individual packages
-GROUPS=""
-PACKAGES=""
-while IFS= read -r line; do
-    [[ -z "$line" ]] && continue
-    if [[ "$line" == @* ]]; then
-        GROUPS="$GROUPS $line"
-    else
-        PACKAGES="$PACKAGES $line"
-    fi
-done < <(sed -n '/%packages/,/%end/{/%packages/d;/%end/d;/^#/d;/^$/d;p}' "$WORK/cloudid.ks")
+# Use dnf install --downloadonly with a temporary installroot.
+# This is the only reliable way to resolve @group packages on dnf5 —
+# it uses the full dependency solver with proper group expansion.
+INSTALLROOT="$WORK/installroot"
+rm -rf "$INSTALLROOT"
+
+# Explicit packages from kickstart (non-group packages)
+EXTRA_PKGS=$(sed -n '/%packages/,/%end/{/%packages/d;/%end/d;/^#/d;/^$/d;/^@/d;p}' "$WORK/cloudid.ks" | tr '\n' ' ')
+
+# Groups from kickstart
+GROUPS=$(sed -n '/%packages/,/%end/{/%packages/d;/%end/d;/^#/d;/^$/d;/^@/p}' "$WORK/cloudid.ks" | tr '\n' ' ')
+
+# Anaconda hardware-detected requirements (not in @core/@standard)
+EXTRA_PKGS="$EXTRA_PKGS grub2 grub2-tools grub2-tools-minimal grub2-tools-extra grub2-pc shim-x64 grub2-efi-x64 efibootmgr iscsi-initiator-utils NetworkManager firewalld sudo dracut-config-rescue kernel"
 
 echo "Groups: $GROUPS"
-echo "Packages: $PACKAGES"
+echo "Extra packages: $EXTRA_PKGS"
 
-# Resolve @groups to package names via dnf group info
-RAWHIDE_REPO_OPTS="--repofrompath=rawhide,$RAWHIDE_REPO --repo=rawhide --releasever=rawhide"
-GROUP_PKGS=""
-for grp in $GROUPS; do
-    grpname="${grp#@}"
-    echo "=== Resolving group: $grpname ==="
-    resolved=$(dnf $RAWHIDE_REPO_OPTS group info "$grpname" 2>/dev/null \
-        | grep -E '^ ' | sed 's/^ *//' | cut -d' ' -f1 || true)
-    GROUP_PKGS="$GROUP_PKGS $resolved"
-done
-
-ALL_PKGS="$GROUP_PKGS $PACKAGES"
-echo "=== Total packages to download ==="
-echo "$ALL_PKGS" | tr ' ' '\n' | grep -v '^$' | wc -l
-
-# Download all packages + dependencies from Rawhide repo
-dnf download --resolve --alldeps \
-    --destdir="$PKGDIR" \
+echo "=== Resolving and downloading all packages via installroot ==="
+dnf install -y --downloadonly \
+    --installroot="$INSTALLROOT" \
     --repofrompath=rawhide,"$RAWHIDE_REPO" \
     --repo=rawhide \
     --releasever=rawhide \
-    --forcearch=x86_64 \
+    --setopt=keepcache=1 \
     --skip-unavailable \
-    $ALL_PKGS
+    $GROUPS $EXTRA_PKGS
+
+# Collect all downloaded RPMs from the dnf cache inside installroot
+echo "=== Collecting RPMs from installroot cache ==="
+find "$INSTALLROOT" -name '*.rpm' -exec cp {} "$PKGDIR/" \;
+
+# If installroot cache was empty, check host cache as fallback
+if [ "$(ls "$PKGDIR"/*.rpm 2>/dev/null | wc -l)" -eq 0 ]; then
+    echo "WARNING: No RPMs in installroot cache, checking host cache"
+    find /var/cache/libdnf5 /var/cache/dnf -name '*.rpm' 2>/dev/null -exec cp {} "$PKGDIR/" \;
+fi
+
+rm -rf "$INSTALLROOT"
 
 echo "=== Downloaded $(ls "$PKGDIR"/*.rpm 2>/dev/null | wc -l) RPMs ==="
 du -sh "$PKGDIR"
 
-# Create repo metadata
-echo "=== Creating repository metadata ==="
-createrepo_c "$PKGDIR"
+# Download comps.xml (group definitions) from Rawhide repo
+echo "=== Downloading comps.xml for package group definitions ==="
+REPOMD_URL="${RAWHIDE_REPO}repodata/repomd.xml"
+COMPS_HREF=$(curl -sf "$REPOMD_URL" | grep -oP 'href="[^"]*comps[^"]*\.xml(\.gz|\.xz|\.zst)?' | head -1 | sed 's/href="//')
+if [ -n "$COMPS_HREF" ]; then
+    echo "Found comps file: $COMPS_HREF"
+    curl -L --retry 3 -o "$WORK/comps-raw" "${RAWHIDE_REPO}${COMPS_HREF}"
+    # Decompress if needed
+    case "$COMPS_HREF" in
+        *.gz)  gunzip -c "$WORK/comps-raw" > "$WORK/comps.xml" ;;
+        *.xz)  xz -dc "$WORK/comps-raw" > "$WORK/comps.xml" ;;
+        *.zst) zstd -dc "$WORK/comps-raw" > "$WORK/comps.xml" ;;
+        *)     mv "$WORK/comps-raw" "$WORK/comps.xml" ;;
+    esac
+    echo "comps.xml size: $(wc -c < "$WORK/comps.xml") bytes"
+    COMPS_ARG="-g $WORK/comps.xml"
+else
+    echo "WARNING: Could not find comps.xml in repo metadata"
+    COMPS_ARG=""
+fi
 
 # === Build the DVD ISO ===
 echo "=== Building DVD ISO ==="
@@ -408,7 +438,33 @@ chmod -R u+w "$EXTRACT"
 # Copy kickstart and packages into ISO tree
 cp "$WORK/cloudid.ks" "$EXTRACT/ks.cfg"
 cp -a "$PKGDIR" "$EXTRACT/Packages"
-cp -a "$PKGDIR/repodata" "$EXTRACT/repodata"
+
+# Create repo metadata at ISO root level — paths in metadata will include
+# "Packages/" prefix so DNF finds RPMs at /Packages/*.rpm, not at /*.rpm
+echo "=== Creating repository metadata at ISO root ==="
+rm -rf "$EXTRACT/repodata"
+createrepo_c $COMPS_ARG "$EXTRACT"
+
+# Create .treeinfo so Anaconda recognizes this as a DVD install tree
+cat > "$EXTRACT/.treeinfo" << 'TREEEOF'
+[general]
+name = Fedora Rawhide
+family = Fedora
+version = rawhide
+arch = x86_64
+platforms = x86_64
+
+[tree]
+arch = x86_64
+platforms = x86_64
+
+[variant-Everything]
+id = Everything
+name = Everything
+type = variant
+packages = Packages
+repository = .
+TREEEOF
 
 # Get original volume ID
 ORIG_VOLID=$(xorriso -indev "$WORK/boot.iso" -pvd_info 2>&1 | grep "Volume Id" | sed 's/.*: //' | tr -d "'" | xargs)
@@ -422,10 +478,13 @@ for grubcfg in $(find "$EXTRACT" -name 'grub.cfg' 2>/dev/null); do
     # Auto-install: timeout 0, first entry
     sed -i 's/^set timeout=.*/set timeout=0/' "$grubcfg"
     sed -i 's/^set default=.*/set default="0"/' "$grubcfg"
-    # Add kickstart + console to kernel lines
-    sed -i '/^\s*linux\|^\s*linuxefi/ s|$| inst.ks=cdrom:/ks.cfg earlycon=uart8250,io,0x2f8,115200n8 console=tty0 console=ttyS1,115200n8 console=ttyS0,115200n8|' "$grubcfg"
-    # Remove media check
+    # rd.iscsi.firmware + ip=ibft: hand off iSCSI CDROM connection from iPXE to kernel
+    # Keep original inst.stage2=hd:LABEL=... — label lookup finds the boot device
+    # Use same LABEL for kickstart and repo (cdrom: prefix waits for /dev/sr* which doesn't exist)
+    sed -i '/^\s*linux\|^\s*linuxefi/ s|$| rd.iscsi.firmware ip=ibft inst.ks=hd:LABEL='"$ORIG_VOLID"':/ks.cfg inst.repo=hd:LABEL='"$ORIG_VOLID"' earlycon=uart8250,io,0x2f8,115200n8 console=tty0 console=ttyS1,115200n8 console=ttyS0,115200n8|' "$grubcfg"
+    # Remove media check and quiet
     sed -i 's/ rd.live.check//g' "$grubcfg"
+    sed -i 's/ quiet//g' "$grubcfg"
     echo "--- Patched grub.cfg ---"
     cat "$grubcfg"
     echo "--- end ---"
@@ -436,6 +495,7 @@ echo "=== Building final ISO with xorriso (modify mode) ==="
 
 # Build map args: kickstart, packages, repodata, and patched grub.cfgs
 MAP_ARGS="-map $EXTRACT/ks.cfg /ks.cfg"
+MAP_ARGS="$MAP_ARGS -map $EXTRACT/.treeinfo /.treeinfo"
 MAP_ARGS="$MAP_ARGS -map $EXTRACT/Packages /Packages"
 MAP_ARGS="$MAP_ARGS -map $EXTRACT/repodata /repodata"
 for grubcfg in $(find "$EXTRACT" -name 'grub.cfg' 2>/dev/null); do
