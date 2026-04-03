@@ -354,6 +354,10 @@ GRUB_SERIAL_COMMAND="serial --unit=1 --speed=115200"
 GRUBEOF
 grub2-mkconfig -o /boot/grub2/grub.cfg 2>/dev/null || true
 
+# Force SELinux autorelabel on first boot — fresh install has unlabeled files
+# which causes sshd-keygen and other services to fail with AVC denials
+touch /.autorelabel
+
 # Install rustup with full toolchain
 export RUSTUP_HOME=/usr/local/rustup
 export CARGO_HOME=/usr/local/cargo
