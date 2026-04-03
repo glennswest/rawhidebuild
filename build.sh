@@ -47,7 +47,7 @@ bootloader --location=mbr --boot-drive=sda --append="earlycon=uart8250,io,0x2f8,
 services --enabled=sshd,chronyd
 reboot
 
-%packages
+%packages --ignoremissing
 @core
 @standard
 @development-tools
