@@ -276,6 +276,49 @@ done
 [ -f /root/.ssh/authorized_keys ] && chmod 600 /root/.ssh/authorized_keys
 restorecon -R /root/.ssh 2>/dev/null || true
 
+# LACP bonding (802.3ad) across both NICs
+echo bonding > /etc/modules-load.d/bonding.conf
+
+cat > /etc/NetworkManager/system-connections/bond0.nmconnection << 'BONDEOF'
+[connection]
+id=bond0
+type=bond
+interface-name=bond0
+
+[bond]
+mode=802.3ad
+miimon=100
+lacp_rate=fast
+xmit_hash_policy=layer3+4
+
+[ipv4]
+method=auto
+
+[ipv6]
+method=auto
+BONDEOF
+
+cat > /etc/NetworkManager/system-connections/bond0-port-enp3s0.nmconnection << 'PORT1EOF'
+[connection]
+id=bond0-port-enp3s0
+type=ethernet
+interface-name=enp3s0
+master=bond0
+slave-type=bond
+PORT1EOF
+
+cat > /etc/NetworkManager/system-connections/bond0-port-enp5s0.nmconnection << 'PORT2EOF'
+[connection]
+id=bond0-port-enp5s0
+type=ethernet
+interface-name=enp5s0
+master=bond0
+slave-type=bond
+PORT2EOF
+
+chmod 600 /etc/NetworkManager/system-connections/*.nmconnection
+rm -f /etc/NetworkManager/system-connections/enp3s0.nmconnection 2>/dev/null || true
+
 # CloudID SSH key refresh timer
 cat > /etc/systemd/system/cloudid-keys.service << 'SVCEOF'
 [Unit]
