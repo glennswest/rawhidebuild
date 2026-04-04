@@ -392,9 +392,19 @@ git config --system init.defaultBranch main
 git config --system pull.rebase true
 git config --system core.autocrlf input
 
-# Signal mkube that install is complete — switches BMH to localboot
-# so the server boots from disk on next reboot instead of reinstalling
-curl -sf -X POST "http://192.168.200.2:8082/api/v1/boot-complete" && echo "Switched to localboot" || echo "WARNING: Failed to signal boot-complete"
+%end
+
+# boot-complete must run --nochroot so it uses Anaconda's live network
+# (the chroot may not have routing to cross-network IPs)
+%post --nochroot --log=/mnt/sysimage/root/boot-complete.log
+echo "=== boot-complete: signaling mkube ==="
+echo "Date: \$(date)"
+echo "Network interfaces:"
+ip -4 addr show 2>/dev/null || true
+echo "Route table:"
+ip route show 2>/dev/null || true
+echo "Attempting boot-complete..."
+curl -v -X POST "http://192.168.200.2:8082/api/v1/boot-complete" 2>&1 && echo "SUCCESS: Switched to localboot" || echo "FAILED: boot-complete call failed (exit \$?)"
 %end
 KSEOF
 
